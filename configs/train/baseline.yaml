@@ -1,0 +1,15 @@
+model: yolov8n.pt
+imgsz: 640
+batch: 16
+epochs: 100
+patience: 50
+optimizer: auto
+lr0: 0.01
+lrf: 0.01
+weight_decay: 0.0005
+close_mosaic: 10
+project: runs
+name: bantai-baseline
+exist_ok: true
+
+# Dataset config path can be passed separately as a CLI argument if needed.
