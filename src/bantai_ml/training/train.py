@@ -6,7 +6,7 @@ from ultralytics import YOLO
 
 
 def train_model(
-    model: str = "yolov8n.pt",
+    model: str = "yolo26s.pt",
     data: str | Path = "configs/data/bantai.yaml",
     epochs: int = 100,
     imgsz: int = 640,
@@ -15,7 +15,7 @@ def train_model(
     exist_ok: bool = True,
     **kwargs,
 ):
-    """Train a YOLOv8 model for the BANTAI dataset."""
+    """Train a YOLO26s model for the BANTAI dataset."""
     model_obj = YOLO(model)
     return model_obj.train(
         data=str(data),
