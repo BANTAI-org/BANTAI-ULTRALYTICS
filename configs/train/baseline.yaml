@@ -1,4 +1,4 @@
-model: yolov8n.pt
+model: yolo26s.pt
 imgsz: 640
 batch: 16
 epochs: 100
