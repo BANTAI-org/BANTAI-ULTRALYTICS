@@ -1,0 +1,21 @@
+# Combined weapons dataset v2 (multiple gun datasets + knives)
+path: C:/BANTAI-DATA/processed
+train: 
+  - guns/train/images
+  - guns-v1i/train/images
+  - knives/train/images
+val:
+  - guns/val/images
+  - guns-v1i/valid/images
+  - knives/val/images
+test:
+  - guns/test/images
+  - guns-v1i/test/images
+  - knives/test/images
+
+nc: 4
+names:
+  0: gun
+  1: pistol
+  2: knife
+  3: grenade

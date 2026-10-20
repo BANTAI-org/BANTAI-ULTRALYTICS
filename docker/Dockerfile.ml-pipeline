@@ -1,0 +1,47 @@
+# Multi-stage build for optimized ML pipeline
+FROM python:3.11-slim as builder
+
+WORKDIR /build
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc g++ make cmake \
+    libglib2.0-0 libsm6 libxext6 libxrender-dev libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements and install Python dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir --prefix=/install \
+    ultralytics opencv-python-headless numpy pyyaml \
+    redis py-cpuinfo psutil scipy
+
+# Runtime stage
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libglib2.0-0 libsm6 libxext6 libxrender1 libgomp1 ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy installed packages from builder
+COPY --from=builder /install /usr/local
+
+# Copy application code
+COPY src/ /app/src/
+COPY scripts/ /app/scripts/
+COPY configs/ /app/configs/
+COPY weights/ /app/weights/
+COPY pyproject.toml /app/
+
+# Compile Python bytecode for faster startup
+RUN python -m compileall -b /app/src /app/scripts && \
+    find /app -type f -name '*.py' -delete && \
+    find /app -type f -name '*.pyc' -exec rename 's/\.pyc$/\.py/' {} \;
+
+ENV PYTHONPATH=/app
+ENV PYTHONUNBUFFERED=1
+
+ENTRYPOINT ["python", "-OO"]
+CMD ["scripts/pipeline_runner.py"]

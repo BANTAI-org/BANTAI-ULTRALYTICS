@@ -1,0 +1,51 @@
+# Enhanced training config for BANTAI gun detection
+# Optimized for yolo26s with aggressive augmentation
+
+model: yolo26s.pt
+imgsz: 640
+batch: 16
+epochs: 150
+patience: 50
+
+# Optimizer settings
+optimizer: AdamW  # Often better than SGD for detection
+lr0: 0.001        # Lower initial learning rate for stability
+lrf: 0.01         # Final learning rate factor
+momentum: 0.937
+weight_decay: 0.0005
+
+# Data augmentation (more aggressive)
+hsv_h: 0.015      # Hue augmentation (lighting variations)
+hsv_s: 0.7        # Saturation augmentation
+hsv_v: 0.4        # Value/brightness augmentation
+degrees: 10.0     # Rotation range (±10 degrees)
+translate: 0.1    # Translation (10% of image)
+scale: 0.5        # Scale augmentation (±50%)
+shear: 2.0        # Shear augmentation
+perspective: 0.0001  # Perspective transform
+flipud: 0.0       # No vertical flip (guns orientation matters)
+fliplr: 0.5       # Horizontal flip 50%
+mosaic: 1.0       # Mosaic augmentation probability
+mixup: 0.15       # Mixup augmentation (blends images)
+copy_paste: 0.1   # Copy-paste augmentation
+
+# Advanced training settings
+close_mosaic: 20  # Disable mosaic in last 20 epochs for fine-tuning
+label_smoothing: 0.1  # Reduce overconfidence
+box: 7.5          # Box loss gain
+cls: 0.5          # Classification loss gain
+dfl: 1.5          # Distribution focal loss gain
+
+# Training optimizations
+cos_lr: true      # Cosine learning rate scheduler
+warmup_epochs: 3.0
+warmup_momentum: 0.8
+warmup_bias_lr: 0.1
+
+# Output settings
+project: runs
+name: bantai-enhanced
+exist_ok: true
+save: true
+save_period: 10   # Save checkpoint every 10 epochs
+plots: true

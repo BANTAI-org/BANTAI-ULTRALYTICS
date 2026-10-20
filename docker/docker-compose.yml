@@ -1,0 +1,65 @@
+version: '3.8'
+
+services:
+  # Redis for pipeline coordination
+  redis:
+    image: redis:7-alpine
+    container_name: bantai-redis
+    ports:
+      - "6379:6379"
+    networks:
+      - bantai-network
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-data:/data
+
+  # Pipeline orchestrator
+  orchestrator:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.orchestrator
+    container_name: bantai-orchestrator
+    depends_on:
+      - redis
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - STREAM_1_PRIMARY_URL=${STREAM_1_PRIMARY_URL:-rtsp://camera1:8554/stream}
+      - STREAM_1_BACKUP_URL=${STREAM_1_BACKUP_URL:-rtsp://camera1-backup:8554/stream}
+      - STREAM_1_OUTPUT_URL=${STREAM_1_OUTPUT_URL:-rtsp://output:8554/stream1}
+      - STREAM_2_PRIMARY_URL=${STREAM_2_PRIMARY_URL:-rtsp://camera2:8554/stream}
+      - STREAM_2_BACKUP_URL=${STREAM_2_BACKUP_URL:-rtsp://camera2-backup:8554/stream}
+      - STREAM_2_OUTPUT_URL=${STREAM_2_OUTPUT_URL:-rtsp://output:8554/stream2}
+      - USE_GPU=${USE_GPU:-true}
+      - ENABLE_TRACKING=${ENABLE_TRACKING:-true}
+      - TRACK_THRESH=${TRACK_THRESH:-0.5}
+      - TRACK_BUFFER=${TRACK_BUFFER:-30}
+      - MATCH_THRESH=${MATCH_THRESH:-0.8}
+    networks:
+      - bantai-network
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
+
+  # RTSP output server (for H.264 encoded streams)
+  rtsp-server:
+    image: bluenviron/mediamtx:latest
+    container_name: bantai-rtsp-server
+    ports:
+      - "8554:8554"  # RTSP
+      - "8888:8888"  # WebRTC
+      - "8889:8889"  # HLS
+    networks:
+      - bantai-network
+    restart: unless-stopped
+    volumes:
+      - ./mediamtx.yml:/mediamtx.yml
+
+networks:
+  bantai-network:
+    name: bantai-network
+    driver: bridge
+
+volumes:
+  redis-data:

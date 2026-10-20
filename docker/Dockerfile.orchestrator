@@ -1,0 +1,25 @@
+# Orchestrator container with Docker client
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install Docker CLI
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    docker.io \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies
+RUN pip install --no-cache-dir \
+    redis docker pyyaml
+
+# Copy orchestrator script
+COPY scripts/orchestrator.py /app/
+
+# Compile to bytecode for faster startup
+RUN python -m compileall -b /app && \
+    find /app -type f -name '*.py' -delete && \
+    find /app -type f -name '*.pyc' -exec rename 's/\.pyc$/\.py/' {} \;
+
+ENV PYTHONUNBUFFERED=1
+
+CMD ["python", "-OO", "orchestrator.py"]
