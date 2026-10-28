@@ -16,6 +16,7 @@ services:
 
   # Pipeline orchestrator
   orchestrator:
+    profiles: ["legacy-rtsp"]
     build:
       context: ..
       dockerfile: docker/Dockerfile.orchestrator
@@ -43,16 +44,48 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     restart: unless-stopped
 
-  # Receives cam0/cam1 from Cloudflare SFU and bridges decoded frames to RTSP.
-  sfu-subscriber:
+  # Receives both SFU tracks and feeds decoded frames directly into YOLO.
+  direct-frame-ml:
     build:
       context: ..
-      dockerfile: docker/Dockerfile.sfu-subscriber
+      dockerfile: docker/Dockerfile.ml-pipeline
+    command: ["scripts/direct_frame_runner.py"]
     environment:
       - PI_API_URL=${PI_API_URL:?Set Pi's Cloudflare Access hostname in .env}
       - CF_ACCESS_CLIENT_ID=${CF_ACCESS_CLIENT_ID:?Set Cloudflare Access service token ID in .env}
       - CF_ACCESS_CLIENT_SECRET=${CF_ACCESS_CLIENT_SECRET:?Set Cloudflare Access service token secret in .env}
-      - RTSP_BASE_URL=rtsp://rtsp-server:8554
+      - CF_SFU_TURN_URLS=${CF_SFU_TURN_URLS:-}
+      - CF_SFU_TURN_USERNAME=${CF_SFU_TURN_USERNAME:-}
+      - CF_SFU_TURN_CREDENTIAL=${CF_SFU_TURN_CREDENTIAL:-}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - MODEL_PATH=${MODEL_PATH:-/app/weights/best.pt}
+      - USE_GPU=${USE_GPU:-true}
+      - ENABLE_TRACKING=${ENABLE_TRACKING:-true}
+      - TRACK_THRESH=${TRACK_THRESH:-0.5}
+      - TRACK_BUFFER=${TRACK_BUFFER:-30}
+      - MATCH_THRESH=${MATCH_THRESH:-0.8}
+      - STREAM_1_OUTPUT_URL=${STREAM_1_OUTPUT_URL:-}
+      - STREAM_2_OUTPUT_URL=${STREAM_2_OUTPUT_URL:-}
+    depends_on:
+      - redis
+    networks:
+      - bantai-network
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  camera-viewer:
+    image: nginx:alpine
+    ports:
+      - "8090:80"
+    volumes:
+      - ./viewer:/usr/share/nginx/html:ro
     depends_on:
       - rtsp-server
     networks:

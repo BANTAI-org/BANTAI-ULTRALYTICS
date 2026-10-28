@@ -11,6 +11,7 @@ import logging
 import json
 import tempfile
 import subprocess
+import threading
 from typing import Optional, List, Tuple, Dict, Any
 from dataclasses import dataclass
 from pathlib import Path
@@ -186,11 +187,11 @@ class EvidenceUploader:
 class MLPipeline:
     """ML inference pipeline with H.264 stream processing."""
     
-    def __init__(self, config: PipelineConfig):
+    def __init__(self, config: PipelineConfig, frame_source=None):
         self.config = config
         self.running = False
         self.model = None
-        self.capture = None
+        self.capture = frame_source
         self.writer = None
         self.redis = None
         self.health_monitor = None
@@ -205,8 +206,9 @@ class MLPipeline:
         self.evidence_writer = None
         self.buffer_max_seconds = max(30.0, config.evidence_pre_buffer_seconds + 60.0)
         
-        signal.signal(signal.SIGINT, self._signal_handler)
-        signal.signal(signal.SIGTERM, self._signal_handler)
+        if threading.current_thread() is threading.main_thread():
+            signal.signal(signal.SIGINT, self._signal_handler)
+            signal.signal(signal.SIGTERM, self._signal_handler)
         
     def _signal_handler(self, signum, frame):
         """Handle shutdown signals."""
@@ -222,6 +224,8 @@ class MLPipeline:
         if self.config.evidence_use_nvdec:
             # Try to prefer hardware decode; OpenCV with ffmpeg may use hardware if available
             os.environ.setdefault('OPENCV_FFMPEG_CAPTURE_OPTIONS', 'hwaccel;cuda|hwaccel_device;0')
+        if self.capture is not None:
+            return self.capture
         self.capture = cv2.VideoCapture(url)
         if not self.capture.isOpened():
             # Fallback: try with default options

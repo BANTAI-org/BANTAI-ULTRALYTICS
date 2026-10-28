@@ -13,7 +13,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir --prefix=/install \
     ultralytics opencv-python-headless numpy pyyaml \
-    redis py-cpuinfo psutil scipy
+    redis py-cpuinfo psutil scipy aiortc==1.9.0 requests
 
 # Runtime stage
 FROM python:3.11-slim
@@ -34,11 +34,6 @@ COPY scripts/ /app/scripts/
 COPY configs/ /app/configs/
 COPY weights/ /app/weights/
 COPY pyproject.toml /app/
-
-# Compile Python bytecode for faster startup
-RUN python -m compileall -b /app/src /app/scripts && \
-    find /app -type f -name '*.py' -delete && \
-    find /app -type f -name '*.pyc' -exec rename 's/\.pyc$/\.py/' {} \;
 
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1

@@ -54,12 +54,12 @@ make build-all
 
 ### 2. Configure Streams
 
-Copy and edit the environment file:
+Edit the existing `docker/.env` file. Set `MODEL_PATH=/app/weights/best.pt`, `USE_GPU=true`, and configure `PI_API_URL`, `CF_ACCESS_CLIENT_ID`, and `CF_ACCESS_CLIENT_SECRET` for the Pi Cloudflare SFU feed. Keep service-token values private; leave optional evidence-upload credentials unset unless using that feature. Camera-viewer page runs at `http://localhost:8090` and displays the processed outputs from `http://localhost:8889/stream1` and `/stream2`.
+
+Start the system from repository root:
 
 ```bash
-cd docker
-cp .env.example .env
-# Edit .env with your camera URLs
+docker compose --env-file docker/.env -f docker/docker-compose.yml up --build -d
 ```
 
 ### 3. Start the System
