@@ -15,11 +15,6 @@ RUN pip install --no-cache-dir \
 # Copy orchestrator script
 COPY scripts/orchestrator.py /app/
 
-# Compile to bytecode for faster startup
-RUN python -m compileall -b /app && \
-    find /app -type f -name '*.py' -delete && \
-    find /app -type f -name '*.pyc' -exec rename 's/\.pyc$/\.py/' {} \;
-
 ENV PYTHONUNBUFFERED=1
 
 CMD ["python", "-OO", "orchestrator.py"]

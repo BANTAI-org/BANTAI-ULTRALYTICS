@@ -112,15 +112,27 @@ class PipelineOrchestrator:
                 'PIPELINE_TYPE': pipeline.pipeline_type,
                 'STREAM_URL': pipeline.stream_url,
                 'OUTPUT_STREAM_URL': output_url,
-                'MODEL_PATH': '/app/weights/yolo26s.pt',
+                'MODEL_PATH': os.getenv('MODEL_PATH', '/app/weights/best.pt'),
                 'REDIS_HOST': os.getenv('REDIS_HOST', 'redis'),
                 'REDIS_PORT': os.getenv('REDIS_PORT', '6379'),
-                'HEALTH_CHECK_INTERVAL': '10',
-                'STREAM_TIMEOUT': '30',
+                'HEALTH_CHECK_INTERVAL': os.getenv('HEALTH_CHECK_INTERVAL', '10'),
+                'STREAM_TIMEOUT': os.getenv('STREAM_TIMEOUT', '30'),
                 'ENABLE_TRACKING': os.getenv('ENABLE_TRACKING', 'true'),
                 'TRACK_THRESH': os.getenv('TRACK_THRESH', '0.5'),
                 'TRACK_BUFFER': os.getenv('TRACK_BUFFER', '30'),
-                'MATCH_THRESH': os.getenv('MATCH_THRESH', '0.8')
+                'MATCH_THRESH': os.getenv('MATCH_THRESH', '0.8'),
+                # Evidence upload to NestJS (R3)
+                'EVIDENCE_UPLOAD_ENABLED': os.getenv('EVIDENCE_UPLOAD_ENABLED', 'false'),
+                'EVIDENCE_API_BASE_URL': os.getenv('EVIDENCE_API_BASE_URL') or os.getenv('NESTJS_API_URL') or os.getenv('API_BASE_URL', ''),
+                'EVIDENCE_UPLOAD_TOKEN': os.getenv('EVIDENCE_UPLOAD_TOKEN') or os.getenv('API_TOKEN', ''),
+                'INCIDENT_ID': os.getenv('INCIDENT_ID', ''),
+                'EVIDENCE_NO_DETECT_TIMEOUT': os.getenv('EVIDENCE_NO_DETECT_TIMEOUT', '5.0'),
+                'EVIDENCE_PRE_BUFFER_SECONDS': os.getenv('EVIDENCE_PRE_BUFFER_SECONDS', '10.0'),
+                'EVIDENCE_USE_NVDEC': os.getenv('EVIDENCE_USE_NVDEC', 'true'),
+                'USE_TURN': os.getenv('USE_TURN', 'false'),
+                'TURN_SERVER': os.getenv('TURN_SERVER') or os.getenv('TURN_URL', ''),
+                'TURN_USERNAME': os.getenv('TURN_USERNAME', ''),
+                'TURN_PASSWORD': os.getenv('TURN_PASSWORD', ''),
             }
             
             container = self.docker_client.containers.run(

@@ -40,6 +40,8 @@ Resilient machine learning pipeline system with automatic failover for continuou
 - **Bytecode Compilation**: Optimized performance with compiled Python
 - **Docker Orchestration**: Containerized deployment with automatic restarts
 - **GPU Support**: NVIDIA GPU acceleration for inference
+- **Evidence Upload (R3)**: Clip on detection, finalize after 5s no-detect, upload via multipart to NestJS (R2)
+- **NVDEC/TURN**: Hardware decode (nvdec) and TURN stream support
 
 ## Quick Start
 
@@ -142,6 +144,12 @@ When primary stream recovers:
 - Primary pipeline can be manually restarted
 - Backup pipeline continues until primary is healthy
 - Seamless transition back to primary
+
+### 5. Evidence Capture & Upload
+- On first detection, buffer from start of detection window (pre-buffer configurable)
+- While detections continue, extend clip
+- After 5 seconds with no detection (`EVIDENCE_NO_DETECT_TIMEOUT`), clip is finalized and uploaded via multipart to NestJS R3 (`/storage/evidence/multipart/*`) to R2
+- Uses NVDEC for decode when enabled; supports TURN streams via env config
 
 ## Bytecode Compilation
 

@@ -25,13 +25,14 @@ services:
     environment:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      - STREAM_1_PRIMARY_URL=${STREAM_1_PRIMARY_URL:-rtsp://camera1:8554/stream}
-      - STREAM_1_BACKUP_URL=${STREAM_1_BACKUP_URL:-rtsp://camera1-backup:8554/stream}
+      - STREAM_1_PRIMARY_URL=${STREAM_1_PRIMARY_URL:-rtsp://rtsp-server:8554/cam0}
+            - STREAM_1_BACKUP_URL=${STREAM_1_BACKUP_URL:-rtsp://rtsp-server:8554/cam0}
       - STREAM_1_OUTPUT_URL=${STREAM_1_OUTPUT_URL:-rtsp://output:8554/stream1}
-      - STREAM_2_PRIMARY_URL=${STREAM_2_PRIMARY_URL:-rtsp://camera2:8554/stream}
-      - STREAM_2_BACKUP_URL=${STREAM_2_BACKUP_URL:-rtsp://camera2-backup:8554/stream}
+      - STREAM_2_PRIMARY_URL=${STREAM_2_PRIMARY_URL:-rtsp://rtsp-server:8554/cam1}
+            - STREAM_2_BACKUP_URL=${STREAM_2_BACKUP_URL:-rtsp://rtsp-server:8554/cam1}
       - STREAM_2_OUTPUT_URL=${STREAM_2_OUTPUT_URL:-rtsp://output:8554/stream2}
       - USE_GPU=${USE_GPU:-true}
+      - MODEL_PATH=${MODEL_PATH:-/app/weights/best.pt}
       - ENABLE_TRACKING=${ENABLE_TRACKING:-true}
       - TRACK_THRESH=${TRACK_THRESH:-0.5}
       - TRACK_BUFFER=${TRACK_BUFFER:-30}
@@ -40,6 +41,22 @@ services:
       - bantai-network
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
+
+  # Receives cam0/cam1 from Cloudflare SFU and bridges decoded frames to RTSP.
+  sfu-subscriber:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.sfu-subscriber
+    environment:
+      - PI_API_URL=${PI_API_URL:?Set Pi's Cloudflare Access hostname in .env}
+      - CF_ACCESS_CLIENT_ID=${CF_ACCESS_CLIENT_ID:?Set Cloudflare Access service token ID in .env}
+      - CF_ACCESS_CLIENT_SECRET=${CF_ACCESS_CLIENT_SECRET:?Set Cloudflare Access service token secret in .env}
+      - RTSP_BASE_URL=rtsp://rtsp-server:8554
+    depends_on:
+      - rtsp-server
+    networks:
+      - bantai-network
     restart: unless-stopped
 
   # RTSP output server (for H.264 encoded streams)

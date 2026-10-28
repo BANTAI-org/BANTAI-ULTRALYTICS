@@ -7,26 +7,32 @@ rtspAddress: :8554
 protocols: [tcp]
 encryption: "no"
 
-# Paths for output streams
+# Paths for input/output streams
 paths:
+  cam1:
+    source: publisher
+    sourceOnDemand: no
+
+  cam2:
+    source: publisher
+    sourceOnDemand: no
+
   stream1:
     source: publisher
     sourceOnDemand: no
-    runOnPublish: ""
-    runOnDemand: ""
-    
+
   stream2:
     source: publisher
     sourceOnDemand: no
-    runOnPublish: ""
-    runOnDemand: ""
-    
+
   # Accept any other stream dynamically
   all:
     source: publisher
 
-# WebRTC for browser viewing
+# WebRTC for browser viewing / WHIP ingestion
 webrtcAddress: :8889
+webrtcLocalUDPAddress: :8189
+webrtcICEServers: []
 
 # HLS for wider compatibility
 hlsAddress: :8888

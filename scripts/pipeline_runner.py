@@ -8,14 +8,19 @@ import sys
 import time
 import signal
 import logging
-from typing import Optional
+import json
+import tempfile
+import subprocess
+from typing import Optional, List, Tuple, Dict, Any
 from dataclasses import dataclass
 from pathlib import Path
+from datetime import datetime
 
 import cv2
 import numpy as np
 from ultralytics import YOLO
 import redis
+import requests
 
 from bytetrack import ByteTracker
 
@@ -42,6 +47,18 @@ class PipelineConfig:
     track_thresh: float = 0.5
     track_buffer: int = 30
     match_thresh: float = 0.8
+    # Evidence upload (R3)
+    evidence_upload_enabled: bool = False
+    evidence_api_base_url: Optional[str] = None
+    evidence_upload_token: Optional[str] = None
+    incident_id: Optional[str] = None
+    evidence_no_detect_timeout: float = 5.0  # seconds
+    evidence_pre_buffer_seconds: float = 10.0  # keep buffer before first detection
+    evidence_use_nvdec: bool = True  # prefer hardware decode (nvdec)
+    use_turn: bool = False
+    turn_server: Optional[str] = None
+    turn_username: Optional[str] = None
+    turn_password: Optional[str] = None
 
 
 class StreamHealthMonitor:
@@ -73,6 +90,99 @@ class StreamHealthMonitor:
         return (time.time() - self.last_frame_time) < timeout
 
 
+class EvidenceUploader:
+    """Handle evidence clipping and multipart upload to NestJS/R3."""
+    
+    def __init__(self, config: PipelineConfig):
+        self.config = config
+        self.enabled = config.evidence_upload_enabled and config.evidence_api_base_url
+        self.session = requests.Session()
+        if config.evidence_upload_token:
+            self.session.headers.update({'Authorization': f'Bearer {config.evidence_upload_token}'})
+        
+    def initiate_multipart(self, file_name: str, content_type: str = 'video/mp4') -> Optional[Dict[str, Any]]:
+        try:
+            url = f"{self.config.evidence_api_base_url}/storage/evidence/multipart/initiate"
+            params = {}
+            if self.config.incident_id:
+                params['incidentId'] = self.config.incident_id
+            resp = self.session.post(url, json={'fileName': file_name, 'contentType': content_type}, params=params)
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as e:
+            logger.error(f"Failed to initiate multipart upload: {e}")
+            return None
+    
+    def sign_parts(self, key: str, upload_id: str, part_numbers: List[int]) -> Optional[List[Dict[str, Any]]]:
+        try:
+            url = f"{self.config.evidence_api_base_url}/storage/evidence/multipart/sign-parts"
+            resp = self.session.post(url, json={'key': key, 'uploadId': upload_id, 'partNumbers': part_numbers})
+            resp.raise_for_status()
+            data = resp.json()
+            return data.get('urls') or data
+        except Exception as e:
+            logger.error(f"Failed to sign parts: {e}")
+            return None
+    
+    def complete_multipart(self, key: str, upload_id: str, parts: List[Dict[str, Any]]) -> bool:
+        try:
+            url = f"{self.config.evidence_api_base_url}/storage/evidence/multipart/complete"
+            resp = self.session.post(url, json={'key': key, 'uploadId': upload_id, 'parts': parts})
+            resp.raise_for_status()
+            return True
+        except Exception as e:
+            logger.error(f"Failed to complete multipart upload: {e}")
+            return False
+    
+    def upload_file_multipart(self, file_path: str, file_name: Optional[str] = None) -> bool:
+        if not self.enabled:
+            logger.warning("Evidence upload disabled or missing config")
+            return False
+        if not os.path.exists(file_path):
+            logger.error(f"Evidence file not found: {file_path}")
+            return False
+        file_name = file_name or os.path.basename(file_path)
+        init = self.initiate_multipart(file_name)
+        if not init:
+            return False
+        upload_id = init.get('uploadId')
+        key = init.get('objectKey') or init.get('key')
+        if not upload_id or not key:
+            logger.error(f"Invalid initiate response: {init}")
+            return False
+        file_size = os.path.getsize(file_path)
+        part_size = 5 * 1024 * 1024  # 5MB
+        part_numbers = []
+        with open(file_path, 'rb') as f:
+            i = 1
+            while True:
+                chunk = f.read(part_size)
+                if not chunk:
+                    break
+                part_numbers.append(i)
+                i += 1
+        urls_info = self.sign_parts(key, upload_id, part_numbers)
+        if not urls_info or len(urls_info) != len(part_numbers):
+            logger.error("Failed to get presigned URLs for all parts")
+            return False
+        parts = []
+        with open(file_path, 'rb') as f:
+            for idx, pn in enumerate(part_numbers):
+                chunk = f.read(part_size)
+                url = urls_info[idx].get('url') if isinstance(urls_info[idx], dict) else urls_info[idx]
+                try:
+                    resp = requests.put(url, data=chunk)
+                    resp.raise_for_status()
+                    etag = resp.headers.get('ETag') or resp.headers.get('etag')
+                    if etag and etag.startswith('"') and etag.endswith('"'):
+                        etag = etag[1:-1]
+                    parts.append({'partNumber': pn, 'etag': etag or ''})
+                except Exception as e:
+                    logger.error(f"Failed to upload part {pn}: {e}")
+                    return False
+        return self.complete_multipart(key, upload_id, parts)
+
+
 class MLPipeline:
     """ML inference pipeline with H.264 stream processing."""
     
@@ -85,6 +195,15 @@ class MLPipeline:
         self.redis = None
         self.health_monitor = None
         self.tracker = None
+        self.evidence_uploader = EvidenceUploader(config) if config.evidence_upload_enabled else None
+        # Evidence buffering
+        self.frame_buffer: List[Tuple[float, np.ndarray]] = []
+        self.first_detection_time: Optional[float] = None
+        self.last_detection_time: Optional[float] = None
+        self.recording_evidence = False
+        self.evidence_clip_path: Optional[str] = None
+        self.evidence_writer = None
+        self.buffer_max_seconds = max(30.0, config.evidence_pre_buffer_seconds + 60.0)
         
         signal.signal(signal.SIGINT, self._signal_handler)
         signal.signal(signal.SIGTERM, self._signal_handler)
@@ -94,6 +213,21 @@ class MLPipeline:
         logger.info(f"Received signal {signum}, shutting down...")
         self.running = False
         
+    def _build_capture(self):
+        """Open video capture with nvdec/turn support if configured."""
+        url = self.config.stream_url
+        logger.info(f"Opening stream: {url}")
+        if self.config.use_turn and self.config.turn_server:
+            logger.info(f"Using TURN server config: {self.config.turn_server}")
+        if self.config.evidence_use_nvdec:
+            # Try to prefer hardware decode; OpenCV with ffmpeg may use hardware if available
+            os.environ.setdefault('OPENCV_FFMPEG_CAPTURE_OPTIONS', 'hwaccel;cuda|hwaccel_device;0')
+        self.capture = cv2.VideoCapture(url)
+        if not self.capture.isOpened():
+            # Fallback: try with default options
+            self.capture = cv2.VideoCapture(url)
+        return self.capture
+    
     def initialize(self):
         """Initialize pipeline components."""
         logger.info(f"Initializing {self.config.pipeline_type} pipeline {self.config.pipeline_id}")
@@ -127,17 +261,18 @@ class MLPipeline:
             logger.info("ByteTrack initialized")
         
         # Open input stream
-        logger.info(f"Opening stream: {self.config.stream_url}")
-        self.capture = cv2.VideoCapture(self.config.stream_url)
+        self._build_capture()
         
         if not self.capture.isOpened():
             raise RuntimeError(f"Failed to open stream: {self.config.stream_url}")
             
         # Get stream properties
-        fps = int(self.capture.get(cv2.CAP_PROP_FPS))
+        fps = int(self.capture.get(cv2.CAP_PROP_FPS)) or 30
         width = int(self.capture.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(self.capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
         logger.info(f"Stream properties: {width}x{height} @ {fps}fps")
+        self.fps = fps
+        self.frame_size = (width, height)
         
         # Setup output stream (H.264 encoded)
         if self.config.output_stream_url:
@@ -161,13 +296,97 @@ class MLPipeline:
         self.running = True
         logger.info("Pipeline initialized successfully")
         
+    def _update_evidence_buffer(self, frame: np.ndarray, has_detection: bool, ts: float):
+        if not self.evidence_uploader or not self.evidence_uploader.enabled:
+            return
+        # Add to buffer (ring buffer)
+        self.frame_buffer.append((ts, frame.copy()))
+        # Trim buffer
+        if self.frame_buffer:
+            cutoff = ts - self.buffer_max_seconds
+            while self.frame_buffer and self.frame_buffer[0][0] < cutoff:
+                self.frame_buffer.pop(0)
+        if has_detection:
+            self.last_detection_time = ts
+            if not self.recording_evidence:
+                self.first_detection_time = ts
+                self.recording_evidence = True
+                logger.info(f"Evidence recording started at {ts}")
+                # Start evidence writer from buffered frames if possible
+                self._start_evidence_writer(ts)
+        else:
+            # Check timeout
+            if self.recording_evidence and self.last_detection_time:
+                if ts - self.last_detection_time >= self.config.evidence_no_detect_timeout:
+                    logger.info(f"No detection for {self.config.evidence_no_detect_timeout}s - finalizing evidence clip")
+                    self._finalize_evidence_clip()
+    
+    def _start_evidence_writer(self, start_ts: float):
+        try:
+            fps = getattr(self, 'fps', 30)
+            size = getattr(self, 'frame_size', None)
+            if not size and self.capture:
+                w = int(self.capture.get(cv2.CAP_PROP_FRAME_WIDTH))
+                h = int(self.capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                size = (w, h)
+            if not size:
+                return
+            tmpdir = tempfile.gettempdir()
+            fname = f"evidence_{self.config.pipeline_id}_{int(time.time())}.mp4"
+            self.evidence_clip_path = os.path.join(tmpdir, fname)
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            self.evidence_writer = cv2.VideoWriter(self.evidence_clip_path, fourcc, fps, size)
+            # Write buffered frames from start of detection window
+            if self.first_detection_time:
+                for fts, fframe in self.frame_buffer:
+                    if fts >= self.first_detection_time - 0.01:  # include from first detection start
+                        self.evidence_writer.write(fframe)
+        except Exception as e:
+            logger.error(f"Failed to start evidence writer: {e}")
+            self.evidence_writer = None
+            self.evidence_clip_path = None
+    
+    def _write_evidence_frame(self, frame: np.ndarray):
+        if self.recording_evidence and self.evidence_writer is not None:
+            try:
+                self.evidence_writer.write(frame)
+            except Exception as e:
+                logger.error(f"Failed to write evidence frame: {e}")
+    
+    def _finalize_evidence_clip(self):
+        try:
+            if self.evidence_writer:
+                self.evidence_writer.release()
+                self.evidence_writer = None
+            clip_path = self.evidence_clip_path
+            self.recording_evidence = False
+            self.first_detection_time = None
+            self.last_detection_time = None
+            self.evidence_clip_path = None
+            if clip_path and os.path.exists(clip_path) and self.evidence_uploader:
+                logger.info(f"Uploading evidence clip: {clip_path}")
+                # Try to upload in background thread would be better, but keep simple
+                try:
+                    self.evidence_uploader.upload_file_multipart(clip_path)
+                except Exception as e:
+                    logger.error(f"Evidence upload failed: {e}")
+                finally:
+                    try:
+                        os.remove(clip_path)
+                    except Exception:
+                        pass
+        except Exception as e:
+            logger.error(f"Failed to finalize evidence clip: {e}")
+    
     def process_frame(self, frame: np.ndarray) -> np.ndarray:
         """Process frame with ML model and ByteTrack tracking."""
         results = self.model(frame, verbose=False)[0]
         
         annotated_frame = frame.copy()
+        has_detection = False
         
         if self.config.enable_tracking and len(results.boxes) > 0:
+            has_detection = True
             # Prepare detections for ByteTrack: [x1, y1, x2, y2, score, class_id]
             detections = []
             for box in results.boxes:
@@ -229,7 +448,8 @@ class MLPipeline:
             }
             self.redis.hset(f'pipeline:{self.config.pipeline_id}:detections', mapping=detection_data)
             
-        else:
+        elif len(results.boxes) > 0:
+            has_detection = True
             # No tracking - just draw detections
             for box in results.boxes:
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
@@ -250,6 +470,22 @@ class MLPipeline:
                 'classes': ','.join([results.names[int(b.cls[0])] for b in results.boxes])
             }
             self.redis.hset(f'pipeline:{self.config.pipeline_id}:detections', mapping=detection_data)
+        else:
+            has_detection = False
+            detection_data = {
+                'count': 0,
+                'timestamp': time.time(),
+                'classes': ''
+            }
+            self.redis.hset(f'pipeline:{self.config.pipeline_id}:detections', mapping=detection_data)
+        
+        # Evidence handling
+        try:
+            ts = time.time()
+            self._update_evidence_buffer(frame, has_detection, ts)
+            self._write_evidence_frame(frame)
+        except Exception as e:
+            logger.error(f"Evidence handling error: {e}")
         
         return annotated_frame
     
@@ -330,7 +566,7 @@ def load_config_from_env() -> PipelineConfig:
         pipeline_id=os.getenv('PIPELINE_ID', 'pipeline-1'),
         pipeline_type=os.getenv('PIPELINE_TYPE', 'primary'),
         stream_url=os.getenv('STREAM_URL', 'rtsp://localhost:8554/stream'),
-        model_path=os.getenv('MODEL_PATH', '/app/weights/yolo26s.pt'),
+        model_path=os.getenv('MODEL_PATH', '/app/weights/best.pt'),
         redis_host=os.getenv('REDIS_HOST', 'redis'),
         redis_port=int(os.getenv('REDIS_PORT', '6379')),
         health_check_interval=int(os.getenv('HEALTH_CHECK_INTERVAL', '10')),
@@ -339,7 +575,18 @@ def load_config_from_env() -> PipelineConfig:
         enable_tracking=os.getenv('ENABLE_TRACKING', 'true').lower() == 'true',
         track_thresh=float(os.getenv('TRACK_THRESH', '0.5')),
         track_buffer=int(os.getenv('TRACK_BUFFER', '30')),
-        match_thresh=float(os.getenv('MATCH_THRESH', '0.8'))
+        match_thresh=float(os.getenv('MATCH_THRESH', '0.8')),
+        evidence_upload_enabled=os.getenv('EVIDENCE_UPLOAD_ENABLED', 'false').lower() == 'true',
+        evidence_api_base_url=os.getenv('EVIDENCE_API_BASE_URL') or os.getenv('NESTJS_API_URL') or os.getenv('API_BASE_URL'),
+        evidence_upload_token=os.getenv('EVIDENCE_UPLOAD_TOKEN') or os.getenv('API_TOKEN'),
+        incident_id=os.getenv('INCIDENT_ID'),
+        evidence_no_detect_timeout=float(os.getenv('EVIDENCE_NO_DETECT_TIMEOUT', '5.0')),
+        evidence_pre_buffer_seconds=float(os.getenv('EVIDENCE_PRE_BUFFER_SECONDS', '10.0')),
+        evidence_use_nvdec=os.getenv('EVIDENCE_USE_NVDEC', 'true').lower() == 'true',
+        use_turn=os.getenv('USE_TURN', 'false').lower() == 'true',
+        turn_server=os.getenv('TURN_SERVER') or os.getenv('TURN_URL'),
+        turn_username=os.getenv('TURN_USERNAME'),
+        turn_password=os.getenv('TURN_PASSWORD'),
     )
 
 
