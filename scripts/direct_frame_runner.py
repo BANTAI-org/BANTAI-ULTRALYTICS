@@ -8,6 +8,7 @@ import time
 
 import numpy as np
 from aiortc import RTCConfiguration, RTCIceServer, RTCPeerConnection, RTCSessionDescription
+from aiortc.mediastreams import MediaStreamError
 import requests
 
 from pipeline_runner import MLPipeline, load_config_from_env
@@ -180,12 +181,18 @@ async def run():
                 return
             async def consume():
                 frame_count = 0
-                while True:
-                    video_frame = await track.recv()
-                    sources[name].push(video_frame.to_ndarray(format="bgr24"))
-                    frame_count += 1
-                    if frame_count == 1:
-                        logger.info("First SFU video frame received for %s", name)
+                try:
+                    while True:
+                        video_frame = await track.recv()
+                        sources[name].push(video_frame.to_ndarray(format="bgr24"))
+                        frame_count += 1
+                        if frame_count == 1:
+                            logger.info("First SFU video frame received for %s", name)
+                except MediaStreamError:
+                    logger.warning("SFU video track ended for %s after %d frame(s)", name, frame_count)
+                except Exception:
+                    logger.exception("SFU video track consumer failed for %s", name)
+                    raise
             asyncio.create_task(consume())
 
         logger.info("SFU subscriber remote SDP received; tracks advertised: %s", track_names)
@@ -198,7 +205,13 @@ async def run():
                   json={"sessionDescription": {"type": pc.localDescription.type, "sdp": pc.localDescription.sdp}})
         await wait_for_connection(pc)
         logger.info("Direct SFU frames feeding YOLO cam0 and cam1; no RTSP input bridge")
-        await asyncio.Future()
+        while True:
+            await asyncio.sleep(5)
+            for name, thread in zip(("cam0", "cam1"), threads):
+                if not thread.is_alive():
+                    raise RuntimeError(
+                        f"ML pipeline thread for {name} exited; check preceding pipeline error"
+                    )
     finally:
         for source in sources.values():
             source.release()

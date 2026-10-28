@@ -11,7 +11,7 @@
     .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1rem; }
     article { background: #1a2029; border: 1px solid #303947; border-radius: .75rem; overflow: hidden; }
     h2 { font-size: 1rem; margin: 0; padding: .75rem 1rem; }
-    iframe { display: block; width: 100%; aspect-ratio: 16 / 9; border: 0; background: #000; }
+    video { display: block; width: 100%; aspect-ratio: 16 / 9; background: #000; object-fit: contain; }
     p { color: #aeb9c8; }
   </style>
 </head>
@@ -19,8 +19,28 @@
   <h1>BANTAI camera viewer</h1>
   <p>Live previews from processed output streams. Start direct-frame ML and configure each output URL before viewing.</p>
   <main class="grid">
-    <article><h2>Camera 0</h2><iframe title="Camera 0" src="http://localhost:8889/stream1"></iframe></article>
-    <article><h2>Camera 1</h2><iframe title="Camera 1" src="http://localhost:8889/stream2"></iframe></article>
+    <article><h2>Camera 0</h2><video id="camera0" controls autoplay muted playsinline></video></article>
+    <article><h2>Camera 1</h2><video id="camera1" controls autoplay muted playsinline></video></article>
   </main>
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@1"></script>
+  <script>
+    const streams = [
+      ["camera0", "http://localhost:8888/stream1/index.m3u8"],
+      ["camera1", "http://localhost:8888/stream2/index.m3u8"],
+    ];
+
+    for (const [id, url] of streams) {
+      const video = document.getElementById(id);
+      if (video.canPlayType("application/vnd.apple.mpegurl")) {
+        video.src = url;
+      } else if (Hls.isSupported()) {
+        const hls = new Hls();
+        hls.loadSource(url);
+        hls.attachMedia(video);
+      } else {
+        video.outerHTML = `<p>HLS playback is not supported by this browser.</p>`;
+      }
+    }
+  </script>
 </body>
 </html>

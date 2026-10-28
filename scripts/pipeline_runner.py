@@ -193,6 +193,8 @@ class MLPipeline:
         self.model = None
         self.capture = frame_source
         self.writer = None
+        self.output_process = None
+        self.output_stdin = None
         self.redis = None
         self.health_monitor = None
         self.tracker = None
@@ -232,6 +234,29 @@ class MLPipeline:
             self.capture = cv2.VideoCapture(url)
         return self.capture
     
+    def _start_output_publisher(self, width: int, height: int, fps: int):
+        command = [
+            "ffmpeg", "-hide_banner", "-loglevel", "warning", "-nostdin",
+            "-f", "rawvideo", "-pix_fmt", "bgr24", "-video_size", f"{width}x{height}",
+            "-framerate", str(fps), "-i", "pipe:0", "-an",
+            "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
+            "-pix_fmt", "yuv420p", "-f", "rtsp", "-rtsp_transport", "tcp",
+            self.config.output_stream_url,
+        ]
+        try:
+            self.output_process = subprocess.Popen(
+                command, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                stderr=None, bufsize=0,
+            )
+        except OSError as exc:
+            raise RuntimeError(f"Failed to start FFmpeg output publisher: {exc}") from exc
+        if self.output_process.poll() is not None:
+            raise RuntimeError(
+                f"FFmpeg output publisher exited immediately with code {self.output_process.returncode}"
+            )
+        self.output_stdin = self.output_process.stdin
+        logger.info("FFmpeg output publisher started for %s", self.config.output_stream_url)
+
     def initialize(self):
         """Initialize pipeline components."""
         logger.info(f"Initializing {self.config.pipeline_type} pipeline {self.config.pipeline_id}")
@@ -278,16 +303,9 @@ class MLPipeline:
         self.fps = fps
         self.frame_size = (width, height)
         
-        # Setup output stream (H.264 encoded)
+        # Publish processed frames with FFmpeg; OpenCV does not reliably push RTSP.
         if self.config.output_stream_url:
-            fourcc = cv2.VideoWriter_fourcc(*'H264')
-            self.writer = cv2.VideoWriter(
-                self.config.output_stream_url,
-                fourcc,
-                fps,
-                (width, height)
-            )
-            logger.info(f"Output stream: {self.config.output_stream_url}")
+            self._start_output_publisher(width, height, fps)
             
         # Register pipeline in Redis
         self.redis.hset(f'pipeline:{self.config.pipeline_id}', mapping={
@@ -531,8 +549,15 @@ class MLPipeline:
                 processed_frame = self.process_frame(frame)
                 
                 # Write to output stream
-                if self.writer:
-                    self.writer.write(processed_frame)
+                if self.output_process:
+                    if self.output_process.poll() is not None:
+                        raise RuntimeError(
+                            f"FFmpeg output publisher exited with code {self.output_process.returncode}"
+                        )
+                    try:
+                        self.output_stdin.write(np.ascontiguousarray(processed_frame).tobytes())
+                    except (BrokenPipeError, OSError) as exc:
+                        raise RuntimeError(f"FFmpeg output publisher pipe failed: {exc}") from exc
                     
                 frame_count += 1
                 
@@ -557,6 +582,21 @@ class MLPipeline:
             
         if self.writer:
             self.writer.release()
+
+        if self.output_process:
+            if self.output_stdin and not self.output_stdin.closed:
+                self.output_stdin.close()
+            try:
+                self.output_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.output_process.terminate()
+                try:
+                    self.output_process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    self.output_process.kill()
+                    self.output_process.wait()
+            self.output_process = None
+            self.output_stdin = None
             
         if self.redis:
             self.redis.hset(f'pipeline:{self.config.pipeline_id}', 'status', 'stopped')
